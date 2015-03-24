@@ -14,6 +14,7 @@ var prettyBytes = require('pretty-bytes');
 var chalk = require('chalk');
 var zlib = require('zlib');
 var archiver = require('archiver');
+var streamBuffers = require('stream-buffers');
 
 module.exports = function(grunt) {
 
@@ -59,25 +60,44 @@ module.exports = function(grunt) {
         grunt.file.mkdir(path.dirname(filePair.dest));
 
         var srcStream = fs.createReadStream(src);
-        var destStream = fs.createWriteStream(filePair.dest);
-        var compressor = algorithm.call(zlib, exports.options);
+        var originalSize = exports.getSize(src);
 
+        var destStream;
+        function init_destStream() {
+          destStream = fs.createWriteStream(filePair.dest);
+
+          destStream.on('close', function() {
+            var compressedSize = exports.getSize(filePair.dest);
+            var ratio = Math.round(parseInt(compressedSize) / parseInt(originalSize) * 100) + '%';
+
+            grunt.log.writeln('Created ' + chalk.cyan(filePair.dest) + ' (' + compressedSize + ') - ' + chalk.cyan(ratio) + ' of the original size');
+            nextFile();
+          });
+        }
+
+        // write to memory stream if source and destination are the same
+        var tmpStream;
+        if (src === filePair.dest) {
+          tmpStream = new streamBuffers.WritableStreamBuffer();
+          tmpStream.on('close', function() {
+            init_destStream();
+
+            destStream.write(this.getContents());
+            destStream.end();
+          });
+        } else {
+          init_destStream();
+        }
+
+        var compressor = algorithm.call(zlib, exports.options);
+        
         compressor.on('error', function(err) {
           grunt.log.error(err);
           grunt.fail.warn(algorithm + ' failed.');
           nextFile();
         });
 
-        destStream.on('close', function() {
-          var originalSize = exports.getSize(src);
-          var compressedSize = exports.getSize(filePair.dest);
-          var ratio = Math.round(parseInt(compressedSize) / parseInt(originalSize) * 100) + '%';
-
-          grunt.log.writeln('Created ' + chalk.cyan(filePair.dest) + ' (' + compressedSize + ') - ' + chalk.cyan(ratio) + ' of the original size');
-          nextFile();
-        });
-
-        srcStream.pipe(compressor).pipe(destStream);
+        srcStream.pipe(compressor).pipe(tmpStream || destStream);
       }, nextPair);
     }, done);
   };
